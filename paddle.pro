@@ -13,8 +13,10 @@ TEMPLATE = app
 
 
 SOURCES += main.cpp\
-        mainworker.cpp
+        mainworker.cpp \
+    serialworker.cpp
 
-HEADERS  += mainworker.h
+HEADERS  += mainworker.h \
+    serialworker.h
 
 FORMS    += mainworker.ui

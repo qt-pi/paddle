@@ -12,6 +12,9 @@
 #include <QSerialPortInfo>
 #include <QScrollBar>
 #include <QTime>
+#include <QThread>
+#include "serialworker.h"
+
 namespace Ui {
 class MainWorker;
 }
@@ -33,30 +36,29 @@ private slots:
 
     void on_connectPushButton_clicked();
 
-    void onSerialPortDisconnect();
-
-    void onSerialPortMessage();
-
     void on_serialSendPushButton_clicked();
 
     void on_serialSendLineEdit_returnPressed();
 
     void on_serialClearPushButton_clicked();
 
-    void on_commTextBrowser_textChanged();
+    void commWindowAppend(QString text);
+
+    void setSerialIsConnected(bool isConnected);
+
+    void progressChange(int progress);
+
 
 private:
     Ui::MainWorker *ui;
     QSerialPort *mSerialPort;
     QByteArray serialPortMessageBuffer;
+    SerialWorker *mSerialWorker;
+    QThread *serialThread;
     bool isSerialConnected, signalsConnected;
     int writeLimit;
 
     void refreshPorts();
-    void setSerialIsConnected(bool isConnected);
-    void setProgress(int progress);
-    void commWindowAppend(QString text);
-
 };
 
 #endif // MAINWORKER_H

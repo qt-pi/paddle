@@ -6,24 +6,24 @@ MainWorker::MainWorker(QWidget *parent) :
     ui(new Ui::MainWorker)
 {
     ui->setupUi(this);
-    writeLimit = 80;
-    setProgress(0);
-    signalsConnected = false;
-    mSerialPort = new QSerialPort(this);
+    progressChange(0);
+    writeLimit = 60;
+    setSerialIsConnected(false);
+
+    serialThread = new QThread(this);
+    mSerialWorker = new SerialWorker();
+    mSerialWorker->moveToThread(serialThread);
+
+    connect(serialThread, SIGNAL(started()), mSerialWorker, SLOT(startConnect()));
+    connect(serialThread, SIGNAL(finished()), mSerialWorker, SLOT(closeConnection()));
+    connect(mSerialWorker, SIGNAL(newSerialText(QString)), this, SLOT(commWindowAppend(QString)));
+    connect(mSerialWorker, SIGNAL(serialConnectionChange(bool)), this, SLOT(setSerialIsConnected(bool)));
+    connect(mSerialWorker, SIGNAL(progressChange(int)), this, SLOT(progressChange(int)));
 
     refreshPorts();
 }
 
-void delay( int millisecondsToWait )
-{
-    QTime dieTime = QTime::currentTime().addMSecs( millisecondsToWait );
-    while( QTime::currentTime() < dieTime )
-    {
-        QCoreApplication::processEvents( QEventLoop::AllEvents, 100 );
-    }
-}
-
-void MainWorker::setProgress(int progress)
+void MainWorker::progressChange(int progress)
 {
     if (ui->progressBar->value() != progress)
     {
@@ -33,11 +33,11 @@ void MainWorker::setProgress(int progress)
 
 MainWorker::~MainWorker()
 {
-    delete ui;
-    setSerialIsConnected(false);
-    writeLimit = 0.10;
 
-    refreshPorts();
+    delete ui;
+    mSerialWorker->closeConnection();
+    mSerialWorker->deleteLater();
+    serialThread->deleteLater();
 }
 
 void MainWorker::on_inputFilePushButton_clicked()
@@ -47,7 +47,7 @@ void MainWorker::on_inputFilePushButton_clicked()
     if (!ui->inputFileLineEdit->text().isEmpty())
     {
         QFileInfo mFileInfo(ui->inputFileLineEdit->text());
-        ui->ouputFileLineEdit->setText("/home/$USER/" + mFileInfo.baseName());
+        ui->ouputFileLineEdit->setText(mFileInfo.fileName());
     }
 }
 
@@ -58,10 +58,10 @@ void MainWorker::on_transferPushButton_clicked()
         commWindowAppend("ERROR!\n Please make sure input and output fields are completed and that you are connected to a serial device.\n");
         return;
     }
+
     QFile inputFile(ui->inputFileLineEdit->text());
     QString inputFileBytes;
     QString xified;
-    int progress = 0;
     if (!(inputFile.open(QIODevice::ReadOnly)))
     {
         return;
@@ -73,18 +73,8 @@ void MainWorker::on_transferPushButton_clicked()
         xified.append("\\x" + inputFileBytes.mid(filePos, 2));
     }
 
-    while( progress < xified.size() )
-    {
-        ui->progressBar->setValue((int)((double)(progress)/(double)(xified.size()) * 100));
-        QString chunk = "echo -n -e \"";
-        chunk.append(xified.mid(progress, writeLimit));
-        chunk.append("\" >> " + ui->ouputFileLineEdit->text() + "\n");
-        progress += writeLimit;
-        mSerialPort->write(chunk.toLocal8Bit());
-        delay(ui->delayDoubleSpinBox->value() * 1000);
-    }
-
-    ui->progressBar->setValue(100);
+    mSerialWorker->setFileTransferParams(xified, ui->ouputFileLineEdit->text(), writeLimit, ui->delayDoubleSpinBox->value() * 1000);
+    mSerialWorker->startTransfer();
 }
 
 
@@ -96,6 +86,8 @@ void MainWorker::on_refreshPushButton_clicked()
 void MainWorker::commWindowAppend(QString text)
 {
     QString tempText = ui->commTextBrowser->toPlainText();
+    if (tempText.size() > 2048)
+        tempText.clear();
     tempText.append(text);
     ui->commTextBrowser->clear();
     ui->commTextBrowser->setPlainText(tempText);
@@ -109,14 +101,6 @@ void MainWorker::on_serialClearPushButton_clicked()
     ui->commTextBrowser->clear();
 }
 
-void MainWorker::on_commTextBrowser_textChanged()
-{
-
-}
-
-
-/********************  Serial Functions  *********************/
-
 void MainWorker::refreshPorts()
 {
     ui->portsComboBox->clear();
@@ -126,7 +110,6 @@ void MainWorker::refreshPorts()
 
 void MainWorker::setSerialIsConnected(bool isConnected)
 {
-    //simplify UI changes by putting it in one function
     if(isConnected)
     {
         isSerialConnected = true;
@@ -137,13 +120,6 @@ void MainWorker::setSerialIsConnected(bool isConnected)
         ui->portsComboBox->setEnabled(false);
         ui->refreshPushButton->setEnabled(false);
         ui->baudRateLineEdit->setEnabled(false);
-
-        if (!signalsConnected)
-        {
-            connect(mSerialPort, SIGNAL(aboutToClose()), this, SLOT(onSerialPortDisconnect()));
-            connect(mSerialPort, SIGNAL(readyRead()), this, SLOT(onSerialPortMessage()));
-            signalsConnected = true;
-        }
     }
     else
     {
@@ -160,54 +136,23 @@ void MainWorker::setSerialIsConnected(bool isConnected)
 
 void MainWorker::on_connectPushButton_clicked()
 {
-    if (!isSerialConnected) //check if serial port is already connected
+    if (!isSerialConnected)
     {
-        mSerialPort = new QSerialPort(this);
-        mSerialPort->setPortName(ui->portsComboBox->currentText());
-        mSerialPort->setBaudRate(ui->baudRateLineEdit->text().toInt());
-
-        if (!mSerialPort->open(QIODevice::ReadWrite))
-        {
-            //if serial port connection fails
-            commWindowAppend("\nFailed to open serial port...\n");
-        }
-        else
-        {
-            //serial port open succeeded
-            setSerialIsConnected(true);
-        }
+      mSerialWorker->setSerialParams(ui->portsComboBox->currentText(), ui->baudRateLineEdit->text().toInt());
+      serialThread->start();
     }
-    else //if serial port already connected, assume user wanted to disconnect.
+    else
     {
-        mSerialPort->close();
+        mSerialWorker->closeConnection();
     }
-}
-
-void MainWorker::onSerialPortMessage()
-{
-    QByteArray serialBuffer;
-    serialBuffer = mSerialPort->readAll();
-    commWindowAppend(serialBuffer);
-}
-
-void MainWorker::onSerialPortDisconnect()
-{
-    setSerialIsConnected(false);
 }
 
 void MainWorker::on_serialSendPushButton_clicked()
 {
     if (isSerialConnected)
     {
-        if (ui->serialSendLineEdit->text().isEmpty())
-        {
-            mSerialPort->write(QString('\n').toLocal8Bit());
-        }
-        else
-        {
-            mSerialPort->write(QString(ui->serialSendLineEdit->text() + '\n').toLocal8Bit());
-            ui->serialSendLineEdit->selectAll();
-        }
+        mSerialWorker->sendSerialMessage(QString(ui->serialSendLineEdit->text() + "\n"));
+        ui->serialSendLineEdit->selectAll();
     }
     else
     {
@@ -219,7 +164,5 @@ void MainWorker::on_serialSendLineEdit_returnPressed()
 {
     on_serialSendPushButton_clicked();
 }
-
-/*************** END SERIAL FUNCTIONS ********************/
 
 
