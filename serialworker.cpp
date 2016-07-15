@@ -1,101 +1,132 @@
 #include "serialworker.h"
 
-SerialWorker::SerialWorker(QObject *parent) : QObject(parent)
+SerialWorker::SerialWorker(QObject *parent)
+    : QObject(parent),
+      _serialPort(new QSerialPort()),
+      _serialBuffer(QString()),
+      _isConnected(false),
+      _isTransferring(false)
 {
-    isSerialConnected = false;
-    mFileData = "";
-    outputFile = "";
-    writeLimit = 80;
-    delayTime = 100;
-
-    mSerialPort = new QSerialPort(this);
-    connect(mSerialPort, SIGNAL(readyRead()), this, SLOT(onSerialPortMessage()));
-    connect(mSerialPort, SIGNAL(aboutToClose()), this, SLOT(onSerialPortDisconnect()));
+    connect(_serialPort, SIGNAL(aboutToClose()), this, SLOT(_aboutToClose()));
+    connect(_serialPort, SIGNAL(readyRead()), this, SLOT(_readyRead()));
 }
 
-void SerialWorker::delay( int millisecondsToWait )
+SerialWorker::~SerialWorker()
 {
-    QTime dieTime = QTime::currentTime().addMSecs( millisecondsToWait );
+    _serialPort->close();
+    _serialPort->deleteLater();
+}
+
+void SerialWorker::ConnectToSerialPort(QString PortName, int BaudRate)
+{
+    if (_isConnected)
+    {
+        emit StatusMessage("Serial port already connected.");
+        return;
+    }
+
+    _serialPort->setPortName(PortName);
+    _serialPort->setBaudRate(BaudRate);
+
+    if (!_serialPort->open(QIODevice::ReadWrite))
+    {
+        emit StatusMessage("Error connecting to serial port.");
+        return;
+    }
+
+    _isConnected = true;
+    emit StatusMessage("Serial Port Connected; Port: " + PortName + " Baud: " + QString::number(BaudRate));
+    emit SerialPortConnected();
+}
+
+void SerialWorker::DisconnectSerialPort()
+{
+    _serialPort->close();
+}
+
+void SerialWorker::SendSerialMessage(QString Message)
+{
+    if (!_isConnected && !_isTransferring)
+    {
+        emit StatusMessage("Error sending message, no Serial Port connected.");
+        return;
+    }
+    _serialPort->write(Message.toLocal8Bit());
+}
+
+void SerialWorker::_aboutToClose()
+{
+    _isConnected = false;
+    emit AboutToClose();
+}
+
+void SerialWorker::_readyRead()
+{
+    if (!_isTransferring)
+    {
+        QByteArray serialBytes = _serialPort->readAll();
+
+        for (int indexCounter = 0; indexCounter < serialBytes.size(); indexCounter++)
+        {
+            if (serialBytes[indexCounter] == '\n')
+            {
+                emit NewSerialMessage(_serialBuffer);
+                _serialBuffer.clear();
+            }
+            else if (serialBytes[indexCounter] == '\r')
+            {
+            }
+            else
+            {
+                _serialBuffer.append(QString(serialBytes.at(indexCounter)));
+            }
+        }
+    }
+}
+
+void SerialWorker::DelayTime(int MillisecondsToWait)
+{
+    QTime dieTime = QTime::currentTime().addMSecs( MillisecondsToWait );
     while( QTime::currentTime() < dieTime )
     {
         QCoreApplication::processEvents( QEventLoop::AllEvents, 100 );
     }
 }
 
-void SerialWorker::setSerialParams(QString PortName, int BaudRate)
+void SerialWorker::TransferFile(QString InputFile, QString OutputFile, int ChunkSize, int Delay)
 {
-
-    mSerialPort->setPortName(PortName);
-    mSerialPort->setBaudRate(BaudRate);
-}
-
-void SerialWorker::startConnect()
-{
-
-    if (!mSerialPort->open(QIODevice::ReadWrite))
+    emit StatusMessage("Opening File...");
+    QFile inputFile(InputFile);
+    QString inputFileBytes;
+    QString xified;
+    if (!(inputFile.open(QIODevice::ReadOnly)))
     {
-        setSerialConnectionState(false);
+        emit StatusMessage("Error sending message, no Serial Port connected.");
+        return;
     }
-    else
+    emit StatusMessage("Parsing File...");
+    inputFileBytes = inputFile.readAll().toHex();
+    inputFile.close();
+    for (int filePos = 0; filePos < inputFileBytes.size(); filePos += 2)
     {
-        setSerialConnectionState(true);
+        xified.append("\\x" + inputFileBytes.mid(filePos, 2));
     }
-}
 
-void SerialWorker::closeConnection()
-{
-    mSerialPort->close();
-}
-
-void SerialWorker::onSerialPortDisconnect()
-{
-    setSerialConnectionState(false);
-}
-
-void SerialWorker::setSerialConnectionState(bool connectionState)
-{
-    if (isSerialConnected != connectionState)
-    {
-        isSerialConnected = connectionState;
-        emit serialConnectionChange(isSerialConnected);
-    }
-}
-
-void SerialWorker::sendSerialMessage(QString message)
-{
-    if (isSerialConnected)
-    {
-        mSerialPort->write(message.toLocal8Bit());
-    }
-}
-
-void SerialWorker::onSerialPortMessage()
-{
-    QString messageBuffer = mSerialPort->readAll();
-    emit newSerialText(messageBuffer);
-}
-
-void SerialWorker::setFileTransferParams(QString fileData, QString OutputFile, int WriteLimit, int DelayTime)
-{
-    mFileData = fileData;
-    outputFile = OutputFile;
-    writeLimit = WriteLimit;
-    delayTime = DelayTime;
-}
-
-void SerialWorker::startTransfer()
-{
-
-    for (int progress = 0; progress < mFileData.size(); progress += writeLimit)
+    emit StatusMessage("Transferring File...");
+    _isTransferring = true;
+    for (int progress = 0; progress < xified.size(); progress += ChunkSize)
     {
         QString chunk = "echo -n -e \"";
-        chunk.append(mFileData.mid(progress, writeLimit));
-        chunk.append("\" >> " + outputFile + "\n");
-        mSerialPort->write(chunk.toLocal8Bit());
+        chunk.append(xified.mid(progress, ChunkSize));
+        chunk.append("\" >> " + OutputFile + "\n");
+        _serialPort->write(chunk.toLocal8Bit());
 
-        emit progressChange(((int)((double)(progress)/(double)(mFileData.size()) * 100)));
-        delay(delayTime);
+        emit ProgressChange(((int)((double)(progress)/(double)(xified.size()) * 100)));
+        DelayTime(Delay);
     }
-
-    emit progressChange(100);
+    _isTransferring = false;
+    emit StatusMessage("File Transfer Complete.");
+    emit FinishedFileTransfer();
+    emit ProgressChange(100);
 }
+

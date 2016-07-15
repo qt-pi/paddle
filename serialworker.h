@@ -2,62 +2,45 @@
 #define SERIALWORKER_H
 
 #include <QObject>
-#include <QCoreApplication>
 #include <QSerialPort>
+#include <QFile>
+#include <QCoreApplication>
 #include <QTime>
-#include <QDebug>
+#include <QCryptographicHash>
 
 class SerialWorker : public QObject
 {
     Q_OBJECT
 public:
     explicit SerialWorker(QObject *parent = 0);
-
-    void setPortName(QString portName);
-
-    void setBaudRate(int baudRate);
-
-    void sendSerialMessage(QString message);
-
-    void setSerialParams(QString PortName, int BaudRate);
-
-    void setFileTransferParams(QString fileData, QString OutputFile, int WriteLimit, int DelayTime);
+    ~SerialWorker();
+    void ConnectToSerialPort(QString PortName, int BaudRate);
+    void DisconnectSerialPort();
+    void SendSerialMessage(QString Message);
+    void TransferFile(QString InputFile, QString OutputFile, int ChunkSize, int Delay);
 
 signals:
-    void newSerialText(QString text);
-
-    void serialConnectionChange(bool isConnected);
-
-    void progressChange(int progress);
-
-private slots:
-    void onSerialPortDisconnect();
-
-    void onSerialPortMessage();
+    void ErrorMessage();
+    void SerialPortConnected();
+    void AboutToClose();
+    void NewSerialMessage(QString);
+    void StatusMessage(QString);
+    void ProgressChange(int);
+    void MD5Sum(QString);
+    void FinishedFileTransfer();
 
 public slots:
 
-    void startConnect();
-
-    void startTransfer();
-
-    void closeConnection();
+private slots:
+    void _aboutToClose();
+    void _readyRead();
 
 private:
-    QSerialPort *mSerialPort;
-
-    QString mFileData;
-
-    QString outputFile;
-
-    int writeLimit, delayTime;
-
-    bool isSerialConnected;
-
-    void delay(int millisecondsToWait);
-
-    void setSerialConnectionState(bool connectionState);
-
+    void DelayTime(int MillisecondsToWait);
+    QSerialPort* _serialPort;
+    QString _serialBuffer;
+    bool _isConnected;
+    bool _isTransferring;
 };
 
 #endif // SERIALWORKER_H
